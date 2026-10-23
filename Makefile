@@ -1832,6 +1832,9 @@ cli-opts-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	$(SPINEL) -I test/require_load_path test/require_load_path/main.rb -o "$$tmp/lp" >"$$tmp/lp.out" 2>&1 && \
 	  "$$tmp/lp" 2>&1 | cmp -s - test/require_load_path/main.rb.expected || \
 	  { echo "cli-opts-test: FAIL (a file reached by -I require and by require_relative loaded twice, or a require naming the .rb found nothing)"; ok=0; }; \
+	$(SPINEL) -I test/dead_branch_require test/dead_branch_require/main.rb -o "$$tmp/dbr" >"$$tmp/dbr.out" 2>&1 && \
+	  "$$tmp/dbr" 2>&1 | cmp -s - test/dead_branch_require/main.rb.expected || \
+	  { echo "cli-opts-test: FAIL (a library required in a dead defined? branch lost a file it requires under a condition of its own)"; ok=0; }; \
 	mkdir -p "$$tmp/shadow/openssl"; printf 'module OpenSSL\n  def self.whoami = "project"\nend\n' > "$$tmp/shadow/openssl/openssl.rb"; \
 	printf 'require "openssl"\nputs OpenSSL.whoami\n' > "$$tmp/shadow.rb"; \
 	$(SPINEL) -I "$$tmp/shadow" "$$tmp/shadow.rb" -o "$$tmp/shadowbin" >"$$tmp/shadow.out" 2>&1 && [ "$$("$$tmp/shadowbin")" = "project" ] || \

@@ -3036,6 +3036,12 @@ static int sp_req_in_control_only(const char *buf, const char *kw) {
   static const char *const CTL[] = { "if", "elsif", "else", "unless", "case", "when", "begin",
                                      "rescue", "ensure", "while", "until", NULL };
   const char *l = ls;
+  /* a sibling require already inlined under this condition sits between
+     the conditional splice's markers at its own file's margin, and is no
+     statement of the enclosing branch: read past it, or the second
+     require of `unless defined?(X); require "a"; require "b"; end` is
+     hoisted out of the condition */
+  int cond_depth = 0;
   while (l > buf) {
     const char *pe = l - 1;              /* the previous line's newline */
     const char *pl = pe;
@@ -3043,6 +3049,10 @@ static int sp_req_in_control_only(const char *buf, const char *kw) {
     l = pl;
     const char *t = pl;
     while (t < pe && (*t == ' ' || *t == '\t')) t++;
+    /* (a modifier's splice closes its `if` on the marker's line) */
+    if (strncmp(t, "#</SPINEL_COND", 14) == 0 || strncmp(t, "end #</SPINEL_COND", 18) == 0) { cond_depth++; continue; }
+    if (strncmp(t, "#<SPINEL_COND", 13) == 0) { if (cond_depth) cond_depth--; continue; }
+    if (cond_depth) continue;
     if (t == pe || *t == '#') continue;  /* blank or comment */
     size_t ind = (size_t)(t - pl);
     if (ind >= indent) continue;
