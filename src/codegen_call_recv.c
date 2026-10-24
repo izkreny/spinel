@@ -6616,6 +6616,14 @@ static int emit_hash_compare_by_identity(Compiler *c, int id, int recv, TyKind r
   buf_puts(b, ")");
   return 1;
 }
+/* A merge of a #to_hash of another layout than the receiver, named as
+   written: a merge! into a fresh literal was rewritten to merge. */
+static void refuse_to_hash_layout(Compiler *c, int id) {
+  const char *sn = nt_str(c->nt, id, "merge_src");
+  char msg[96];
+  snprintf(msg, sizeof msg, "Hash#%s with a #to_hash of another layout than the receiver", sn ? sn : "merge");
+  unsupported_feature(c, id, msg);
+}
 int emit_hash_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -7475,7 +7483,7 @@ else {
             /* the analysis typed this call as the receiver's layout; a
                #to_hash of another layout would widen it, which is an
                inference question, so say so rather than miscompile */
-            unsupported_feature(c, id, "Hash#merge with a #to_hash of another layout than the receiver");
+            refuse_to_hash_layout(c, id);
             return 0;
           }
           /* conv_cls_name_of leaves a Complex and a Rational to the numeric
