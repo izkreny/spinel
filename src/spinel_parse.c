@@ -3036,6 +3036,13 @@ static int sp_req_in_control_only(const char *buf, const char *kw) {
   static const char *const CTL[] = { "if", "elsif", "else", "unless", "case", "when", "begin",
                                      "rescue", "ensure", "while", "until", NULL };
   const char *l = ls;
+  /* a sibling require already inlined under this condition sits between
+     the conditional splice's markers at its own file's margin, and is no
+     statement of the enclosing branch: read past it, or the second
+     require of `unless defined?(X); require "a"; require "b"; end` is
+     hoisted out of the condition. Not in a loop, though: inlined in place
+     there, the file would load on every pass, where hoisted it loads once */
+  int cond_depth = 0, read_past = 0;
   while (l > buf) {
     const char *pe = l - 1;              /* the previous line's newline */
     const char *pl = pe;
@@ -3043,6 +3050,10 @@ static int sp_req_in_control_only(const char *buf, const char *kw) {
     l = pl;
     const char *t = pl;
     while (t < pe && (*t == ' ' || *t == '\t')) t++;
+    /* (a modifier's splice closes its `if` on the marker's line) */
+    if (strncmp(t, "#</SPINEL_COND", 14) == 0 || strncmp(t, "end #</SPINEL_COND", 18) == 0) { cond_depth++; read_past = 1; continue; }
+    if (strncmp(t, "#<SPINEL_COND", 13) == 0) { if (cond_depth) cond_depth--; continue; }
+    if (cond_depth) continue;
     if (t == pe || *t == '#') continue;  /* blank or comment */
     size_t ind = (size_t)(t - pl);
     if (ind >= indent) continue;
@@ -3052,6 +3063,7 @@ static int sp_req_in_control_only(const char *buf, const char *kw) {
       if (strncmp(t, CTL[i], n) == 0 && !sp_req_ident_char(t[n])) { ctl = 1; break; }
     }
     if (!ctl) return 0;
+    if (read_past && (strncmp(t, "while", 5) == 0 || strncmp(t, "until", 5) == 0) && !sp_req_ident_char(t[5])) return 0;
     indent = ind;
     if (indent == 0) return 1;
   }
