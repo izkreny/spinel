@@ -11,3 +11,7 @@ require "dbr"
 p DBR_ONE
 p DBR_TWO
 p DBR_THREE
+
+# two requires in a loop body still load their files once
+require "dbrloop"
+p dbr_loop_one
