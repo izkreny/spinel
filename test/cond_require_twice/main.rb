@@ -38,3 +38,28 @@ end
 require "crt/i"
 puts "after i"
 p __LINE__
+
+if ENV["SPINEL_CRT_NOPE"]
+  require "crt/k"
+end
+def load_k
+  require "crt/k"
+end
+puts "before k"
+p load_k
+p load_k
+
+if ENV["SPINEL_CRT_NOPE"]
+  require_relative "crt/m"
+end
+2.times { p require_relative "crt/m" }
+
+unless defined?(Nope)
+  require "crt/n2"
+end
+p require "crt/n"
+
+unless defined?(Nope)
+  require_relative "crt/o2"
+end
+p require_relative "crt/o"

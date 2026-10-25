@@ -15,3 +15,16 @@ true
 i loaded
 after i
 40
+before k
+k loaded
+true
+false
+m loaded
+true
+false
+n loaded
+n2 loaded
+false
+o loaded
+o2 loaded
+false
