@@ -3313,6 +3313,67 @@ static char *sp_req_cond_wrap(char *content, unsigned char **cfsl, size_t *cfsl_
   return w;
 }
 
+/* The files a copy inlined under a condition loaded, by canonical path. That
+   copy may not run, so a later require of the file inlines it again: every
+   copy of it then runs only while `$__spinel_req_<index>` is unset, and sets
+   it to its own site number, which tells a later require that answers a value
+   whether it was the one that loaded the file. */
+static char **sp_cond_load_paths;
+static int sp_cond_load_count, sp_cond_load_cap, sp_cond_load_sites;
+
+static int sp_cond_load_index(const char *canonical, int add) {
+  for (int i = 0; canonical && i < sp_cond_load_count; i++)
+    if (strcmp(sp_cond_load_paths[i], canonical) == 0) return i;
+  if (!add || !canonical) return -1;
+  sp_cond_load_paths = sp_grow_strs(sp_cond_load_paths, sp_cond_load_count, &sp_cond_load_cap, 8);
+  sp_cond_load_paths[sp_cond_load_count] = strdup(canonical);
+  return sp_cond_load_count++;
+}
+
+typedef struct { int g, site; char val[96]; } SpCondLoad;
+
+/* Is the file at `path` that a require loads (`cond_copy`: inlined in place
+   under a condition) one of those files? Then `cl` holds its flag, this
+   copy's site and the value the require answers. */
+static int sp_cond_load_begin(SpCondLoad *cl, const char *path, int cond_copy) {
+  char *canonical = sp_canonical_path(path);
+  cl->g = sp_cond_load_index(canonical, cond_copy);
+  free(canonical);
+  if (cl->g < 0) return 0;
+  cl->site = ++sp_cond_load_sites;
+  snprintf(cl->val, sizeof cl->val, "($__spinel_req_%d == %d)", cl->g, cl->site);
+  return 1;
+}
+
+/* Run the copy in `content` (between the `pre` and `suf` bytes a condition's
+   wrap put around it) only while its file's flag is unset. `to_insert`: the
+   copy is hoisted ahead of a statement that stays, so its PUSH marker, which
+   would take the place of the require's line, becomes an INSERT. */
+static char *sp_cond_load_wrap(char *content, unsigned char **cfsl, size_t *cfsl_n,
+                               const SpCondLoad *cl, size_t pre, size_t suf, int to_insert) {
+  /* WHY: the guard's lines end in the COND marker, which the line map skips,
+     and stand outside the file's PUSH and POP markers, so a `return` in the
+     file's top level still ends only the file. */
+  size_t len = strlen(content), pl = strlen(SP_PUSH_PREFIX);
+  int conv = to_insert && strncmp(content + pre, SP_PUSH_PREFIX, pl) == 0;
+  size_t body = len - suf;
+  char *w = malloc(len + 160);
+  if (!w) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  sprintf(w, "%.*sunless $__spinel_req_%d; $__spinel_req_%d = %d #<SPINEL_COND>\n%s%.*s%send #</SPINEL_COND>\n%s",
+          (int)pre, content, cl->g, cl->g, cl->site, conv ? SP_INSERT_PREFIX : "",
+          (int)(body - pre - (conv ? pl : 0)), content + pre + (conv ? pl : 0),
+          (body > pre && content[body - 1] != '\n') ? "\n" : "", content + body);
+  size_t open_at = 0, close_at = 1;
+  for (size_t i = 0; i < body; i++)
+    if (content[i] == '\n') { if (i < pre) open_at++; close_at++; }
+  if (body > pre && content[body - 1] != '\n') close_at++;
+  free(content);
+  unsigned char z = 0;
+  sp_fsl_splice(cfsl, cfsl_n, open_at, 0, &z, 1);
+  sp_fsl_splice(cfsl, cfsl_n, close_at, 0, &z, 1);
+  return w;
+}
+
 /* Dependency resolution precedes analysis, so even `if false; require ...`
    would otherwise read the file (or reject a missing one). Only erase literal
    require calls in provably unreachable branches: keep the surrounding code
@@ -5057,6 +5118,8 @@ else {
     /* The call's value is live (a condition, an assignment, a receiver) or a
        trailing modifier would be stranded: inline the file ahead of the line
        and leave the value in the call's place (#3454). */
+    SpCondLoad cload;
+    int guarded = 0;
     {
       /* (a call in the modifier's condition may have been replaced already) */
       ml = site->ml ? (int)(sp_emap_pos(&emap, site->end + (size_t)site->ml) - sp_emap_pos(&emap, site->end)) : 0;
@@ -5067,11 +5130,15 @@ else {
         free(content); content = strdup("");
         free(cfsl); cfsl = sp_fsl_make(content, 0, &cfsl_n);
       }
-      if (dval || (!hit.margin && !site->control_only) || (site->has_modifier && !ml)) {
+      int hoist = dval || (!hit.margin && !site->control_only) || (site->has_modifier && !ml);
+      guarded = strcmp(req_val, "true") == 0 && sp_cond_load_begin(&cload, full_path, !hoist && cond_inline);
+      if (guarded) req_val = cload.val;
+      if (hoist) {
         if (!dval && strcmp(req_val, "true") == 0) {
           const char *v = sp_defer_runtime(&content, canon_keep, NULL, incl_mark);
           if (v) req_val = v;
         }
+        if (guarded) content = sp_cond_load_wrap(content, &cfsl, &cfsl_n, &cload, 0, 0, 1);
         sp_req_hoist_splice(&result, &fsl, &fsl_n, &hit, sp_emap_pos(&emap, ins),
                             content, cfsl, cfsl_n, req_val);
         sp_req_note_hoist(&emap, site, ins, strlen(req_val), len_before, strlen(result));
@@ -5085,7 +5152,15 @@ else {
 
     /* a conditional inclusion is marked, so the requires inside it count as
        conditional too (the markers are comments: two lines, no flags) */
-    if (cond_inline && (!hit.margin || ml)) content = sp_req_cond_wrap(content, &cfsl, &cfsl_n, expr_end, ml);
+    /* WHY: a guard goes inside the condition's wrap (sp_req_cond_wrap's own
+       lines), so a copy whose condition is false leaves its flag unset */
+    size_t wrap_pre = 0, wrap_suf = 0;
+    if (cond_inline && (!hit.margin || ml)) {
+      content = sp_req_cond_wrap(content, &cfsl, &cfsl_n, expr_end, ml);
+      wrap_pre = strlen("#<SPINEL_COND>\n") + (ml ? (size_t)ml + 1 : 0);
+      wrap_suf = strlen(ml ? "end #</SPINEL_COND>\n" : "#</SPINEL_COND>\n");
+    }
+    if (guarded) content = sp_cond_load_wrap(content, &cfsl, &cfsl_n, &cload, wrap_pre, wrap_suf, 0);
 
     /* Replace the statement, consuming its trailing whitespace and single
        newline; anything else on the line (`require_relative 'x'; code`) stays,
@@ -5977,6 +6052,8 @@ else {
        (`require 'x' rescue nil`) that a comment in its place would strand.
        Inline the library ahead of the line and leave the value behind, so the
        statement around it survives and answers what CRuby answers (#3454). */
+    SpCondLoad cload;
+    int guarded = 0;
     {
       char *trail = expr_end;
       while (*trail == ' ' || *trail == '\t') trail++;
@@ -5992,7 +6069,10 @@ else {
         free(content); content = strdup("");
         free(cfsl); cfsl = sp_fsl_make(content, 0, &cfsl_n);
       }
-      if (dval || (!hit.margin && !sp_req_in_control_only(result, hit.kw)) || (has_modifier && !ml)) {
+      int hoist = dval || (!hit.margin && !sp_req_in_control_only(result, hit.kw)) || (has_modifier && !ml);
+      guarded = strcmp(req_val, "true") == 0 && sp_cond_load_begin(&cload, lib_path, !hoist && cond_inline);
+      if (guarded) req_val = cload.val;
+      if (hoist) {
         if (!dval && strcmp(req_val, "true") == 0) {
           /* lib_path is the file found, which a later require of another
              name for it reaches (root_dup below) */
@@ -6001,6 +6081,7 @@ else {
           free(found);
           if (v) req_val = v;
         }
+        if (guarded) content = sp_cond_load_wrap(content, &cfsl, &cfsl_n, &cload, 0, 0, 1);
         sp_req_hoist_splice(&result, fsl, fsl_n, &hit, sp_toplevel_stmt_start(result, (size_t)(hit.kw - result)),
                             content, cfsl, cfsl_n, req_val);
         free(cfsl);
@@ -6013,7 +6094,15 @@ else {
 
     /* a conditional inclusion is marked, so the requires inside it count as
        conditional too (the markers are comments: two lines, no flags) */
-    if (cond_inline && (!hit.margin || ml)) content = sp_req_cond_wrap(content, &cfsl, &cfsl_n, expr_end, ml);
+    /* WHY: a guard goes inside the condition's wrap (sp_req_cond_wrap's own
+       lines), so a copy whose condition is false leaves its flag unset */
+    size_t wrap_pre = 0, wrap_suf = 0;
+    if (cond_inline && (!hit.margin || ml)) {
+      content = sp_req_cond_wrap(content, &cfsl, &cfsl_n, expr_end, ml);
+      wrap_pre = strlen("#<SPINEL_COND>\n") + (ml ? (size_t)ml + 1 : 0);
+      wrap_suf = strlen(ml ? "end #</SPINEL_COND>\n" : "#</SPINEL_COND>\n");
+    }
+    if (guarded) content = sp_cond_load_wrap(content, &cfsl, &cfsl_n, &cload, wrap_pre, wrap_suf, 0);
 
     /* Replace only the `require "name"` statement itself, not the whole
        line, so `require "x"; code` keeps `code`. Consume trailing
