@@ -5419,7 +5419,7 @@ static char *resolve_plain_requires(char *source, const char *exe_path,
     if (!sp_require_find(result, result, "require", &hit)) break;
     /* a file inlined under a condition is loaded only when that branch runs:
        it (and what it requires) stays loadable elsewhere */
-    int incl_mark = sp_included_count, cond_inline = 0, ml = 0;
+    int incl_mark = sp_included_count, defer_mark = sp_defer_count, cond_inline = 0, ml = 0;
     char *pos = hit.kw, *expr_end = hit.expr_end;
     char *line_end = strchr(pos, '\n');
     if (!line_end) line_end = pos + strlen(pos);
@@ -5690,8 +5690,21 @@ else {
           free(found);
           if (v) req_val = v;
         }
+        /* a require inside a file that was itself inlined under a condition
+           (the copy a dead `if defined?(X)` branch holds) is hoisted within
+           that copy, so it runs only when the branch does: the file stays
+           loadable elsewhere, as an inline under the condition does below,
+           and a later require does not call the run-time part it held back */
+        int in_cond_copy = sp_in_cond_region(result, hit.kw);
         sp_req_hoist_splice(&result, fsl, fsl_n, &hit, sp_toplevel_stmt_start(result, (size_t)(hit.kw - result)),
                             content, cfsl, cfsl_n, req_val);
+        if (in_cond_copy) {
+          while (sp_included_count > incl_mark) free(sp_included_paths[--sp_included_count]);
+          while (sp_defer_count > defer_mark) {
+            sp_defer_count--;
+            free(sp_defer_paths[sp_defer_count]); free(sp_defer_vals[sp_defer_count]);
+          }
+        }
         free(cfsl);
         free(content);
         free(canon_keep);
