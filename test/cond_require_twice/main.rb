@@ -63,3 +63,19 @@ unless defined?(Nope)
   require_relative "crt/o2"
 end
 p require_relative "crt/o"
+
+if ENV["SPINEL_CRT_NOPE"]
+  require "crt/p"
+end
+unless defined?(Nope)
+  require "crt/p2"
+end
+p p_name
+
+if ENV["SPINEL_CRT_NOPE"]
+  require_relative "crt/q"
+end
+unless defined?(Nope)
+  require_relative "crt/q2"
+end
+p q_name

@@ -3881,8 +3881,9 @@ static char *sp_cond_load_cat(char *s, const char *add) {
 
 /* Is the file at `path` that a require loads one of those files? With
    `cond_copy` (this copy is inlined in place under a condition) it becomes
-   one, and so does each file the copy took in, marked from `incl_from` on:
-   the copy sets their flags too, since they run when it does. */
+   one, and so does each file the copy took in, marked from `incl_from` on.
+   The copy sets the flags of those that were not one yet, since their copies
+   inside it carry no guard of their own and run when it does. */
 static int sp_cond_load_begin(SpCondLoad *cl, const char *path, int cond_copy, int incl_from) {
   char *canonical = sp_canonical_path(path);
   cl->g = sp_cond_load_index(canonical, cond_copy);
@@ -3893,8 +3894,9 @@ static int sp_cond_load_begin(SpCondLoad *cl, const char *path, int cond_copy, i
   snprintf(b, sizeof b, "$__spinel_req_%d = %d; ", cl->g, cl->site);
   cl->sets = sp_cond_load_cat(NULL, b);
   for (int i = incl_from; cond_copy && i < sp_included_count; i++) {
-    int k = sp_included_paths[i] ? sp_cond_load_index(sp_included_paths[i], 1) : -1;
-    if (k < 0 || k == cl->g) continue;
+    const char *ip = sp_included_paths[i];
+    if (!ip || sp_cond_load_index(ip, 0) >= 0) continue;
+    int k = sp_cond_load_index(ip, 1);
     snprintf(b, sizeof b, "$__spinel_req_%d = %d; ", k, cl->site);
     cl->sets = sp_cond_load_cat(cl->sets, b);
   }
