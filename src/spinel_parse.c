@@ -3867,9 +3867,10 @@ static int sp_cond_load_index(const char *canonical, int add) {
   return sp_cond_load_count++;
 }
 
-/* The file's flag, this copy's site, the flags the copy sets when it runs
+/* The file's flag, this copy's site, whether it is the file's first copy
+   (no copy can have run before it), the flags the copy sets when it runs
    (`sets`, statements ending in "; "), and the value the require answers. */
-typedef struct { int g, site; char *sets, *val; } SpCondLoad;
+typedef struct { int g, site, first; char *sets, *val; } SpCondLoad;
 
 static char *sp_cond_load_cat(char *s, const char *add) {
   size_t sl = s ? strlen(s) : 0, al = strlen(add);
@@ -3886,6 +3887,7 @@ static char *sp_cond_load_cat(char *s, const char *add) {
    inside it carry no guard of their own and run when it does. */
 static int sp_cond_load_begin(SpCondLoad *cl, const char *path, int cond_copy, int incl_from) {
   char *canonical = sp_canonical_path(path);
+  cl->first = sp_cond_load_index(canonical, 0) < 0;
   cl->g = sp_cond_load_index(canonical, cond_copy);
   free(canonical);
   if (cl->g < 0) return 0;
@@ -3928,23 +3930,28 @@ static void sp_cond_load_end(SpCondLoad *cl) {
 }
 
 /* Run the copy in `content` (between the `pre` and `suf` bytes a condition's
-   wrap put around it) only while its file's flag is unset. `to_insert`: the
+   wrap put around it) only while its file's flag is unset; the file's first
+   copy only sets it. `to_insert`: the
    copy is hoisted ahead of a statement that stays, so its PUSH marker, which
    would take the place of the require's line, becomes an INSERT. */
 static char *sp_cond_load_wrap(char *content, unsigned char **cfsl, size_t *cfsl_n,
                                const SpCondLoad *cl, size_t pre, size_t suf, int to_insert) {
   /* WHY: the guard's lines end in the COND marker, which the line map skips,
      and stand outside the file's PUSH and POP markers, so a `return` in the
-     file's top level still ends only the file. */
+     file's top level still ends only the file. The first copy takes no
+     `unless`: a run-time condition around a file's definitions is compiled
+     less precisely than none (an alias_method chain under one recurses). */
   size_t len = strlen(content), pl = strlen(SP_PUSH_PREFIX);
   int conv = to_insert && strncmp(content + pre, SP_PUSH_PREFIX, pl) == 0;
   size_t body = len - suf;
   char *w = malloc(len + strlen(cl->sets) + 96);
   if (!w) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  sprintf(w, "%.*sunless $__spinel_req_%d; %s#<SPINEL_COND>\n%s%.*s%send #</SPINEL_COND>\n%s",
-          (int)pre, content, cl->g, cl->sets, conv ? SP_INSERT_PREFIX : "",
+  char open[48] = "";
+  if (!cl->first) snprintf(open, sizeof open, "unless $__spinel_req_%d; ", cl->g);
+  sprintf(w, "%.*s%s%s#<SPINEL_COND>\n%s%.*s%s%s#</SPINEL_COND>\n%s",
+          (int)pre, content, open, cl->sets, conv ? SP_INSERT_PREFIX : "",
           (int)(body - pre - (conv ? pl : 0)), content + pre + (conv ? pl : 0),
-          (body > pre && content[body - 1] != '\n') ? "\n" : "", content + body);
+          (body > pre && content[body - 1] != '\n') ? "\n" : "", cl->first ? "" : "end ", content + body);
   size_t open_at = 0, close_at = 1;
   for (size_t i = 0; i < body; i++)
     if (content[i] == '\n') { if (i < pre) open_at++; close_at++; }

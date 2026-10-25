@@ -1783,6 +1783,9 @@ cli-opts-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	$(SPINEL) -I test/cond_require_twice test/cond_require_twice/main.rb -o "$$tmp/crt" >"$$tmp/crt.out" 2>&1 && \
 	  "$$tmp/crt" 2>&1 | cmp -s - test/cond_require_twice/main.rb.expected || \
 	  { echo "cli-opts-test: FAIL (a file required under a live condition, then again, loaded twice or answered the wrong value)"; ok=0; }; \
+	$(SPINEL) -I test/cond_require_twice test/cond_require_twice/first_copy.rb -o "$$tmp/crtf" >"$$tmp/crtf.out" 2>&1 && \
+	  "$$tmp/crtf" 2>&1 | cmp -s - test/cond_require_twice/first_copy.rb.expected || \
+	  { echo "cli-opts-test: FAIL (a file's first copy under a condition put its definitions under a run-time condition)"; ok=0; }; \
 	mkdir -p "$$tmp/shadow/openssl"; printf 'module OpenSSL\n  def self.whoami = "project"\nend\n' > "$$tmp/shadow/openssl/openssl.rb"; \
 	printf 'require "openssl"\nputs OpenSSL.whoami\n' > "$$tmp/shadow.rb"; \
 	$(SPINEL) -I "$$tmp/shadow" "$$tmp/shadow.rb" -o "$$tmp/shadowbin" >"$$tmp/shadow.out" 2>&1 && [ "$$("$$tmp/shadowbin")" = "project" ] || \
