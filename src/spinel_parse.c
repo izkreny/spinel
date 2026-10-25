@@ -3867,10 +3867,9 @@ static int sp_cond_load_index(const char *canonical, int add) {
   return sp_cond_load_count++;
 }
 
-/* The file's flag, this copy's site, whether it is the file's first copy
-   (no copy can have run before it), the flags the copy sets when it runs
+/* The file's flag, this copy's site, the flags the copy sets when it runs
    (`sets`, statements ending in "; "), and the value the require answers. */
-typedef struct { int g, site, first; char *sets, *val; } SpCondLoad;
+typedef struct { int g, site; char *sets, *val; } SpCondLoad;
 
 static char *sp_cond_load_cat(char *s, const char *add) {
   size_t sl = s ? strlen(s) : 0, al = strlen(add);
@@ -3887,7 +3886,6 @@ static char *sp_cond_load_cat(char *s, const char *add) {
    inside it carry no guard of their own and run when it does. */
 static int sp_cond_load_begin(SpCondLoad *cl, const char *path, int cond_copy, int incl_from) {
   char *canonical = sp_canonical_path(path);
-  cl->first = sp_cond_load_index(canonical, 0) < 0;
   cl->g = sp_cond_load_index(canonical, cond_copy);
   free(canonical);
   if (cl->g < 0) return 0;
@@ -3930,28 +3928,23 @@ static void sp_cond_load_end(SpCondLoad *cl) {
 }
 
 /* Run the copy in `content` (between the `pre` and `suf` bytes a condition's
-   wrap put around it) only while its file's flag is unset; the file's first
-   copy only sets it. `to_insert`: the
+   wrap put around it) only while its file's flag is unset. `to_insert`: the
    copy is hoisted ahead of a statement that stays, so its PUSH marker, which
    would take the place of the require's line, becomes an INSERT. */
 static char *sp_cond_load_wrap(char *content, unsigned char **cfsl, size_t *cfsl_n,
                                const SpCondLoad *cl, size_t pre, size_t suf, int to_insert) {
   /* WHY: the guard's lines end in the COND marker, which the line map skips,
      and stand outside the file's PUSH and POP markers, so a `return` in the
-     file's top level still ends only the file. The first copy takes no
-     `unless`: a run-time condition around a file's definitions is compiled
-     less precisely than none (an alias_method chain under one recurses). */
+     file's top level still ends only the file. */
   size_t len = strlen(content), pl = strlen(SP_PUSH_PREFIX);
   int conv = to_insert && strncmp(content + pre, SP_PUSH_PREFIX, pl) == 0;
   size_t body = len - suf;
   char *w = malloc(len + strlen(cl->sets) + 96);
   if (!w) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  char open[48] = "";
-  if (!cl->first) snprintf(open, sizeof open, "unless $__spinel_req_%d; ", cl->g);
-  sprintf(w, "%.*s%s%s#<SPINEL_COND>\n%s%.*s%s%s#</SPINEL_COND>\n%s",
-          (int)pre, content, open, cl->sets, conv ? SP_INSERT_PREFIX : "",
+  sprintf(w, "%.*sunless $__spinel_req_%d; %s#<SPINEL_COND>\n%s%.*s%send #</SPINEL_COND>\n%s",
+          (int)pre, content, cl->g, cl->sets, conv ? SP_INSERT_PREFIX : "",
           (int)(body - pre - (conv ? pl : 0)), content + pre + (conv ? pl : 0),
-          (body > pre && content[body - 1] != '\n') ? "\n" : "", cl->first ? "" : "end ", content + body);
+          (body > pre && content[body - 1] != '\n') ? "\n" : "", content + body);
   size_t open_at = 0, close_at = 1;
   for (size_t i = 0; i < body; i++)
     if (content[i] == '\n') { if (i < pre) open_at++; close_at++; }
@@ -3961,6 +3954,40 @@ static char *sp_cond_load_wrap(char *content, unsigned char **cfsl, size_t *cfsl
   sp_fsl_splice(cfsl, cfsl_n, open_at, 0, &z, 1);
   sp_fsl_splice(cfsl, cfsl_n, close_at, 0, &z, 1);
   return w;
+}
+
+/* The resolved program's first copy of each of those files runs with no
+   `unless` around it, only setting the flags.
+   WHY: a run-time condition around a file's definitions is compiled less
+   precisely than none (an alias_method chain under one recurses), and no
+   copy can have run before the first in the text: copies stand only in a
+   file's top-level flow, though the passes make them in another order. */
+static void sp_cond_load_strip_first(char *src) {
+  if (!sp_cond_load_count) return;
+  char *seen = calloc((size_t)sp_cond_load_count, 1);
+  if (!seen) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  static const char op[] = "unless $__spinel_req_";
+  for (char *p = strstr(src, op); p; p = strstr(p + 1, op)) {
+    char *e, *eol = strchr(p, '\n');
+    long g = strtol(p + strlen(op), &e, 10);
+    if (e[0] != ';' || e[1] != ' ' || g < 0 || g >= sp_cond_load_count || seen[g] || !eol ||
+        eol - p < 14 || strncmp(eol - 14, "#<SPINEL_COND>", 14) != 0) continue;
+    seen[g] = 1;
+    int depth = 0;
+    char *q = eol, *closer = NULL;
+    for (;;) {
+      char *a = strstr(q, "#<SPINEL_COND"), *z = strstr(q, "#</SPINEL_COND");
+      if (!z) break;
+      if (a && a < z) { depth++; q = a + 1; continue; }
+      if (depth == 0) { closer = z; break; }
+      depth--; q = z + 1;
+    }
+    if (!closer || closer - src < 4 || strncmp(closer - 4, "end ", 4) != 0) continue;
+    memmove(closer - 4, closer, strlen(closer) + 1);
+    size_t ol = (size_t)(e + 2 - p);
+    memmove(p, p + ol, strlen(p + ol) + 1);
+  }
+  free(seen);
 }
 
 /* Where a position of the file's text is in the text being spliced: every
@@ -6619,6 +6646,7 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   source = sp_splice_builtins(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_extras(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_enumerator(source, argv0, &fsl, &fsl_n);
+  sp_cond_load_strip_first(source);
   sp_src_lex_drop();
   if (sp_req_written != sp_req_resolved) g_require_unread = 1;
 

@@ -79,3 +79,11 @@ unless defined?(Nope)
   require_relative "crt/q2"
 end
 p q_name
+
+unless defined?(Nope)
+  require "crt/s"
+end
+unless defined?(Nope)
+  require_relative "crt/s"
+end
+puts "after s"
