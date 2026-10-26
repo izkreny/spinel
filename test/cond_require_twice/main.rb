@@ -101,3 +101,18 @@ rescue => e
   puts "rescued #{e.message}"
 end
 p require "crt/u"
+
+# a value-live require in a guarded copy loads its file there
+unless defined?(Nope)
+  require_relative "crt/v"
+end
+p require_relative "crt/v2"
+
+# a lazy require in a dead branch leaves the file to a later copy
+if defined?(Nope)
+  require_relative "crt/w"
+end
+unless defined?(Nope)
+  require_relative "crt/w2"
+end
+p require_relative "crt/w3"

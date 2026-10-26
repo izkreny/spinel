@@ -3883,8 +3883,11 @@ static char *sp_cond_load_cat(char *s, const char *add) {
    `cond_copy` (this copy is inlined in place under a condition) it becomes
    one, and so does each file the copy took in, marked from `incl_from` on.
    The copy sets the flags of those that were not one yet, since their copies
-   inside it carry no guard of their own and run when it does. */
-static int sp_cond_load_begin(SpCondLoad *cl, const char *path, int cond_copy, int incl_from) {
+   inside it carry no guard of their own and run when it does. One whose
+   run-time part a hoisted require in `*content` held back (sp_defer_runtime)
+   runs where that require's value stands, maybe in a method: that value sets
+   its flag instead, when it loads the file. */
+static int sp_cond_load_begin(SpCondLoad *cl, const char *path, int cond_copy, int incl_from, char **content) {
   char *canonical = sp_canonical_path(path);
   cl->g = sp_cond_load_index(canonical, cond_copy);
   free(canonical);
@@ -3895,10 +3898,26 @@ static int sp_cond_load_begin(SpCondLoad *cl, const char *path, int cond_copy, i
   cl->sets = sp_cond_load_cat(NULL, b);
   for (int i = incl_from; cond_copy && i < sp_included_count; i++) {
     const char *ip = sp_included_paths[i];
-    /* a file whose run-time part waits in a method (sp_defer_runtime) has
-       not run when this copy has */
-    if (!ip || sp_cond_load_index(ip, 0) >= 0 || sp_defer_lookup(ip)) continue;
+    if (!ip || sp_cond_load_index(ip, 0) >= 0) continue;
     int k = sp_cond_load_index(ip, 1);
+    const char *dv = sp_defer_lookup(ip);
+    char *at = dv && *content ? strstr(*content, dv) : NULL;
+    if (at) {
+      char head[64], tail[96];
+      snprintf(head, sizeof head, "($__spinel_req_%d ? false : ((", k);
+      snprintf(tail, sizeof tail, ") && ($__spinel_req_%d = %d; true)))", k, cl->site);
+      size_t dl = strlen(dv), off = (size_t)(at - *content);
+      char *nv = sp_cond_load_cat(sp_cond_load_cat(sp_cond_load_cat(NULL, head), dv), tail);
+      char *nc = malloc(strlen(*content) - dl + strlen(nv) + 1);
+      if (!nc) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+      sprintf(nc, "%.*s%s%s", (int)off, *content, nv, *content + off + dl);
+      free(*content);
+      *content = nc;
+      for (int j = 0; j < sp_defer_count; j++)
+        if (strcmp(sp_defer_paths[j], ip) == 0) { free(sp_defer_vals[j]); sp_defer_vals[j] = strdup(nv); }
+      free(nv);
+      continue;
+    }
     snprintf(b, sizeof b, "$__spinel_req_%d = %d; ", k, cl->site);
     cl->sets = sp_cond_load_cat(cl->sets, b);
   }
@@ -5221,7 +5240,7 @@ else {
         free(cfsl); cfsl = sp_fsl_make(content, 0, &cfsl_n);
       }
       int hoist = dval || (!hit.margin && !site->control_only) || (site->has_modifier && !ml);
-      guarded = strcmp(req_val, "true") == 0 && sp_cond_load_begin(&cload, full_path, !hoist && cond_inline, incl_mark);
+      guarded = strcmp(req_val, "true") == 0 && sp_cond_load_begin(&cload, full_path, !hoist && cond_inline, incl_mark, &content);
       if (hoist) {
         if (!dval && strcmp(req_val, "true") == 0) {
           const char *v = sp_defer_runtime(&content, canon_keep, NULL, incl_mark);
@@ -6160,7 +6179,7 @@ else {
         free(cfsl); cfsl = sp_fsl_make(content, 0, &cfsl_n);
       }
       int hoist = dval || (!hit.margin && !sp_req_in_control_only(result, hit.kw)) || (has_modifier && !ml);
-      guarded = strcmp(req_val, "true") == 0 && sp_cond_load_begin(&cload, lib_path, !hoist && cond_inline, incl_mark);
+      guarded = strcmp(req_val, "true") == 0 && sp_cond_load_begin(&cload, lib_path, !hoist && cond_inline, incl_mark, &content);
       if (hoist) {
         if (!dval && strcmp(req_val, "true") == 0) {
           /* lib_path is the file found, which a later require of another
