@@ -3901,16 +3901,20 @@ static int sp_cond_load_begin(SpCondLoad *cl, const char *path, int cond_copy, i
     if (!ip || sp_cond_load_index(ip, 0) >= 0) continue;
     int k = sp_cond_load_index(ip, 1);
     const char *dv = sp_defer_lookup(ip);
-    char *at = dv && *content ? strstr(*content, dv) : NULL;
-    if (at) {
+    if (dv && *content && strstr(*content, dv)) {
       char head[64], tail[96];
       snprintf(head, sizeof head, "($__spinel_req_%d ? false : ((", k);
       snprintf(tail, sizeof tail, ") && ($__spinel_req_%d = %d; true)))", k, cl->site);
-      size_t dl = strlen(dv), off = (size_t)(at - *content);
-      char *nv = sp_cond_load_cat(sp_cond_load_cat(sp_cond_load_cat(NULL, head), dv), tail);
-      char *nc = malloc(strlen(*content) - dl + strlen(nv) + 1);
-      if (!nc) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-      sprintf(nc, "%.*s%s%s", (int)off, *content, nv, *content + off + dl);
+      size_t dl = strlen(dv);
+      char *nv = sp_cond_load_cat(sp_cond_load_cat(sp_cond_load_cat(NULL, head), dv), tail), *nc = NULL;
+      for (const char *q = *content, *at; ; q = at + dl) {
+        at = strstr(q, dv);
+        if (!at) { nc = sp_cond_load_cat(nc, q); break; }
+        char *part = strndup(q, (size_t)(at - q));
+        if (!part) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+        nc = sp_cond_load_cat(sp_cond_load_cat(nc, part), nv);
+        free(part);
+      }
       free(*content);
       *content = nc;
       for (int j = 0; j < sp_defer_count; j++)
@@ -3989,14 +3993,32 @@ static char *sp_cond_load_wrap(char *content, unsigned char **cfsl, size_t *cfsl
 static void sp_cond_load_strip_first(char *src) {
   if (!sp_cond_load_count) return;
   char *seen = calloc((size_t)sp_cond_load_count, 1);
+  size_t *firsts = NULL;
+  int nf = 0;
   if (!seen) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  static const char op[] = "unless $__spinel_req_";
-  for (char *p = strstr(src, op); p; p = strstr(p + 1, op)) {
+  static const char op[] = "unless $__spinel_req_", ld[] = "($__spinel_req_";
+  /* WHY: which copies are first is settled before any is changed, and
+     the changes go from the end back, so no position moves under one */
+  for (char *p = strstr(src, op), *l = strstr(src, ld); p; p = strstr(p + 1, op)) {
     char *e, *eol = strchr(p, '\n');
+    /* a held-back value that loads the file (`($__spinel_req_N ? false :
+       ...`) may run ahead of any copy after it in the text */
+    for (; l && l < p; l = strstr(l + 1, ld)) {
+      long lg = strtol(l + strlen(ld), &e, 10);
+      if (lg >= 0 && lg < sp_cond_load_count && !strncmp(e, " ? false", 8)) seen[lg] = 1;
+    }
     long g = strtol(p + strlen(op), &e, 10);
     if (e[0] != ';' || e[1] != ' ' || g < 0 || g >= sp_cond_load_count || seen[g] || !eol ||
         eol - p < 14 || strncmp(eol - 14, "#<SPINEL_COND>", 14) != 0) continue;
     seen[g] = 1;
+    size_t *nfirsts = realloc(firsts, sizeof(size_t) * (size_t)(nf + 1));
+    if (!nfirsts) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    firsts = nfirsts;
+    firsts[nf++] = (size_t)(p - src);
+  }
+  while (nf > 0) {
+    char *p = src + firsts[--nf], *e, *eol = strchr(p, '\n');
+    strtol(p + strlen(op), &e, 10);
     int depth = 0;
     char *q = eol, *closer = NULL;
     for (;;) {
@@ -4011,6 +4033,7 @@ static void sp_cond_load_strip_first(char *src) {
     size_t ol = (size_t)(e + 2 - p);
     memmove(p, p + ol, strlen(p + ol) + 1);
   }
+  free(firsts);
   free(seen);
 }
 

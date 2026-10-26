@@ -116,3 +116,24 @@ unless defined?(Nope)
   require_relative "crt/w2"
 end
 p require_relative "crt/w3"
+
+# the second of two lazy requires of a file loads it as the first does
+unless defined?(Nope)
+  require_relative "crt/x"
+end
+if defined?(Nope)
+  require_relative "crt/x3"
+end
+load_x2b
+unless defined?(Nope)
+  require_relative "crt/x2"
+end
+
+# a lazy require that ran keeps a later copy of the file from running
+unless defined?(Nope)
+  require_relative "crt/y"
+end
+unless defined?(Nope)
+  require_relative "crt/y2"
+end
+p require_relative "crt/y3"
