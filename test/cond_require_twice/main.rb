@@ -87,3 +87,17 @@ unless defined?(Nope)
   require_relative "crt/s"
 end
 puts "after s"
+
+# a file the guarded copy requires lazily, inside a method, has not run
+unless defined?(Nope)
+  require_relative "crt/t"
+end
+p require_relative "crt/t2"
+
+# a load that raised leaves its file unloaded
+begin
+  require "crt/u"
+rescue => e
+  puts "rescued #{e.message}"
+end
+p require "crt/u"

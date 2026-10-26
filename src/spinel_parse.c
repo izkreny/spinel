@@ -3895,7 +3895,9 @@ static int sp_cond_load_begin(SpCondLoad *cl, const char *path, int cond_copy, i
   cl->sets = sp_cond_load_cat(NULL, b);
   for (int i = incl_from; cond_copy && i < sp_included_count; i++) {
     const char *ip = sp_included_paths[i];
-    if (!ip || sp_cond_load_index(ip, 0) >= 0) continue;
+    /* a file whose run-time part waits in a method (sp_defer_runtime) has
+       not run when this copy has */
+    if (!ip || sp_cond_load_index(ip, 0) >= 0 || sp_defer_lookup(ip)) continue;
     int k = sp_cond_load_index(ip, 1);
     snprintf(b, sizeof b, "$__spinel_req_%d = %d; ", k, cl->site);
     cl->sets = sp_cond_load_cat(cl->sets, b);
@@ -3911,9 +3913,10 @@ static int sp_cond_load_begin(SpCondLoad *cl, const char *path, int cond_copy, i
 static const char *sp_cond_load_defer(SpCondLoad *cl, const char *v) {
   char *old = strdup(v);
   char head[64];
-  snprintf(head, sizeof head, "($__spinel_req_%d ? false : (", cl->g);
+  snprintf(head, sizeof head, "($__spinel_req_%d ? false : ((", cl->g);
   free(cl->val);
-  cl->val = sp_cond_load_cat(sp_cond_load_cat(sp_cond_load_cat(sp_cond_load_cat(NULL, head), cl->sets), old), "))");
+  cl->val = sp_cond_load_cat(sp_cond_load_cat(sp_cond_load_cat(sp_cond_load_cat(sp_cond_load_cat(NULL, head), old),
+                                                                ") && ("), cl->sets), "true)))");
   for (int i = 0; i < sp_defer_count; i++)
     if (strcmp(sp_defer_vals[i], old) == 0) { free(sp_defer_vals[i]); sp_defer_vals[i] = strdup(cl->val); }
   free(old);
@@ -3941,10 +3944,12 @@ static char *sp_cond_load_wrap(char *content, unsigned char **cfsl, size_t *cfsl
   size_t body = len - suf;
   char *w = malloc(len + strlen(cl->sets) + 96);
   if (!w) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  sprintf(w, "%.*sunless $__spinel_req_%d; %s#<SPINEL_COND>\n%s%.*s%send #</SPINEL_COND>\n%s",
-          (int)pre, content, cl->g, cl->sets, conv ? SP_INSERT_PREFIX : "",
+  /* WHY: the flags are set when the copy has run to its end, so a load
+     that raised leaves the file unloaded, as CRuby does */
+  sprintf(w, "%.*sunless $__spinel_req_%d; #<SPINEL_COND>\n%s%.*s%s%send #</SPINEL_COND>\n%s",
+          (int)pre, content, cl->g, conv ? SP_INSERT_PREFIX : "",
           (int)(body - pre - (conv ? pl : 0)), content + pre + (conv ? pl : 0),
-          (body > pre && content[body - 1] != '\n') ? "\n" : "", content + body);
+          (body > pre && content[body - 1] != '\n') ? "\n" : "", cl->sets, content + body);
   size_t open_at = 0, close_at = 1;
   for (size_t i = 0; i < body; i++)
     if (content[i] == '\n') { if (i < pre) open_at++; close_at++; }
