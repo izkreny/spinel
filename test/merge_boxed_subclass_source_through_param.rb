@@ -41,7 +41,7 @@ def keyed(obj, source) = (obj.merge!(source); obj)
 p keyed({ "c" => "x" }, tags)
 p keyed({ "a" => 1 }, { "b" => 2 })
 
-# entries that fit leave the receiver as it is
+# entries that fit merge too
 class Names < Hash; end
 names = Names.new
 names["d"] = "fits"
