@@ -8072,6 +8072,8 @@ static TyKind merged_val_ty(Compiler *c, int n) {
    A boxed key or value is one only the run time knows, which the store
    checks then; a literal's own elements still show theirs. */
 static int merged_hash_misfits(Compiler *c, int a, TyKind t, TyKind ct) {
+  /* a Hash subclass instance holds its class's Hash */
+  if (ty_is_object(t) && comp_ary_is_hash(c, ty_object_class(t))) t = comp_ary_kind(c, ty_object_class(t));
   if (!ty_is_hash(t)) return 0;
   if (merged_kv_misfits(c, ct, ty_hash_key(t), ty_hash_val(t))) return 1;
   int h = nt_paren_single(c->nt, a), en = 0;
